@@ -1,0 +1,542 @@
+// ============================================
+// SECRET SANTA - Application JavaScript
+// ============================================
+
+// État global de l'application
+const APP_STATE = {
+    currentUser: null,
+    currentRoom: null,
+    isOrganizer: false,
+    participants: [],
+    assignments: {}
+};
+
+// ============================================
+// UTILITAIRES
+// ============================================
+
+function showNotification(message, type = 'success') {
+    const notification = document.createElement('div');
+    notification.className = `notification ${type}`;
+    notification.textContent = message;
+    document.body.appendChild(notification);
+    
+    setTimeout(() => {
+        notification.style.animation = 'slideInRight 0.3s ease-out reverse';
+        setTimeout(() => notification.remove(), 300);
+    }, 3000);
+}
+
+function generateId() {
+    return Math.random().toString(36).substring(2, 9);
+}
+
+function shuffleArray(array) {
+    const newArray = [...array];
+    for (let i = newArray.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [newArray[i], newArray[j]] = [newArray[j], newArray[i]];
+    }
+    return newArray;
+}
+
+// Algorithme de tirage Secret Santa (personne ne se tire elle-même)
+function generateSecretSanta(participants) {
+    if (participants.length < 2) {
+        throw new Error('Il faut au moins 2 participants');
+    }
+
+    let givers = [...participants];
+    let receivers = shuffleArray([...participants]);
+    
+    let attempts = 0;
+    const maxAttempts = 100;
+    
+    while (attempts < maxAttempts) {
+        let valid = true;
+        for (let i = 0; i < givers.length; i++) {
+            if (givers[i] === receivers[i]) {
+                valid = false;
+                break;
+            }
+        }
+        
+        if (valid) {
+            const assignments = {};
+            for (let i = 0; i < givers.length; i++) {
+                assignments[givers[i]] = receivers[i];
+            }
+            return assignments;
+        }
+        
+        receivers = shuffleArray([...participants]);
+        attempts++;
+    }
+    
+    throw new Error('Impossible de générer un tirage valide. Réessayez.');
+}
+
+// ============================================
+// GESTION FIRESTORE
+// ============================================
+
+class FirestoreDB {
+    static async saveRoom(roomCode, data) {
+        await db.collection('rooms').doc(roomCode).set({
+            ...data,
+            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+    }
+
+    static async getRoom(roomCode) {
+        const doc = await db.collection('rooms').doc(roomCode).get();
+        return doc.exists ? doc.data() : null;
+    }
+
+    static listenToRoom(roomCode, callback) {
+        return db.collection('rooms').doc(roomCode)
+            .onSnapshot((doc) => {
+                if (doc.exists) {
+                    callback(doc.data());
+                }
+            });
+    }
+
+    static async updateParticipants(roomCode, participants) {
+        await db.collection('rooms').doc(roomCode).update({
+            participants
+        });
+    }
+
+    static async saveAssignments(roomCode, assignments) {
+        await db.collection('rooms').doc(roomCode).update({
+            assignments,
+            locked: true
+        });
+    }
+
+    static saveUserSession(userId, userName, roomCode) {
+        localStorage.setItem('secretSantaSession', JSON.stringify({
+            userId,
+            userName,
+            roomCode,
+            timestamp: new Date().toISOString()
+        }));
+    }
+
+    static getUserSession() {
+        const data = localStorage.getItem('secretSantaSession');
+        return data ? JSON.parse(data) : null;
+    }
+
+    static clearUserSession() {
+        localStorage.removeItem('secretSantaSession');
+    }
+}
+
+// ============================================
+// GESTION DE L'INTERFACE
+// ============================================
+
+function showSection(sectionId) {
+    const sections = ['initialSection', 'organizerSection', 'participantSection'];
+    sections.forEach(id => {
+        const section = document.getElementById(id);
+        if (section) {
+            section.classList.toggle('hidden', id !== sectionId);
+        }
+    });
+}
+
+function showElement(elementId) {
+    const element = document.getElementById(elementId);
+    if (element) {
+        element.classList.remove('hidden');
+    }
+}
+
+function hideElement(elementId) {
+    const element = document.getElementById(elementId);
+    if (element) {
+        element.classList.add('hidden');
+    }
+}
+
+// ============================================
+// ORGANISATEUR - Fonctions
+// ============================================
+
+async function createRoom() {
+    const roomCodeInput = document.getElementById('roomCode');
+    const roomCode = roomCodeInput.value.trim().toUpperCase();
+    
+    if (!roomCode) {
+        showNotification('Veuillez entrer un code de partie', 'error');
+        return;
+    }
+
+    if (roomCode.length < 4) {
+        showNotification('Le code doit contenir au moins 4 caractères', 'error');
+        return;
+    }
+
+    try {
+        // Vérifier si la room existe déjà
+        const existingRoom = await FirestoreDB.getRoom(roomCode);
+        if (existingRoom) {
+            showNotification('Ce code existe déjà. Choisissez-en un autre.', 'error');
+            return;
+        }
+
+        // Créer la room
+        const userId = generateId();
+        const roomData = {
+            ownerId: userId,
+            participants: [],
+            assignments: {},
+            locked: false
+        };
+
+        await FirestoreDB.saveRoom(roomCode, roomData);
+        FirestoreDB.saveUserSession(userId, 'Organisateur', roomCode);
+
+        APP_STATE.currentRoom = roomCode;
+        APP_STATE.currentUser = userId;
+        APP_STATE.isOrganizer = true;
+        APP_STATE.participants = [];
+
+        showRoomManagement(roomCode);
+        showNotification(`Partie "${roomCode}" créée avec succès !`);
+        
+        // Écouter les changements
+        FirestoreDB.listenToRoom(roomCode, (data) => {
+            APP_STATE.participants = data.participants || [];
+            APP_STATE.assignments = data.assignments || {};
+            updateParticipantsList();
+        });
+    } catch (error) {
+        console.error('Erreur création room:', error);
+        showNotification('Erreur lors de la création de la partie', 'error');
+    }
+}
+
+function showRoomManagement(roomCode) {
+    document.getElementById('currentRoomCode').textContent = roomCode;
+    document.getElementById('roomManagement').style.display = 'block';
+    
+    // Générer et afficher le lien de partage
+    const shareLink = `${window.location.origin}${window.location.pathname}?room=${roomCode}`;
+    document.getElementById('shareLink').value = shareLink;
+    
+    updateParticipantsList();
+}
+
+async function addParticipant() {
+    const nameInput = document.getElementById('participantName');
+    const name = nameInput.value.trim();
+    
+    if (!name) {
+        showNotification('Veuillez entrer un prénom', 'error');
+        return;
+    }
+
+    // Vérifier si le prénom existe déjà
+    if (APP_STATE.participants.includes(name)) {
+        showNotification('Ce prénom existe déjà', 'error');
+        return;
+    }
+
+    try {
+        const newParticipants = [...APP_STATE.participants, name];
+        await FirestoreDB.updateParticipants(APP_STATE.currentRoom, newParticipants);
+        
+        nameInput.value = '';
+        showNotification(`${name} a été ajouté`);
+    } catch (error) {
+        console.error('Erreur ajout participant:', error);
+        showNotification('Erreur lors de l\'ajout du participant', 'error');
+    }
+}
+
+async function removeParticipant(name) {
+    try {
+        const newParticipants = APP_STATE.participants.filter(p => p !== name);
+        await FirestoreDB.updateParticipants(APP_STATE.currentRoom, newParticipants);
+        showNotification(`${name} a été retiré`);
+    } catch (error) {
+        console.error('Erreur suppression participant:', error);
+        showNotification('Erreur lors de la suppression du participant', 'error');
+    }
+}
+
+function updateParticipantsList() {
+    const list = document.getElementById('participantsList');
+    
+    if (APP_STATE.participants.length === 0) {
+        list.innerHTML = '<li style="text-align: center; color: #a0aec0;">Aucun participant pour le moment</li>';
+        return;
+    }
+
+    list.innerHTML = APP_STATE.participants.map(name => `
+        <li>
+            <span>${name}</span>
+            <button class="btn-remove" onclick="removeParticipant('${name}')">Retirer</button>
+        </li>
+    `).join('');
+}
+
+async function generateDraw() {
+    if (APP_STATE.participants.length < 2) {
+        showNotification('Il faut au moins 2 participants', 'error');
+        return;
+    }
+
+    try {
+        const assignments = generateSecretSanta(APP_STATE.participants);
+        await FirestoreDB.saveAssignments(APP_STATE.currentRoom, assignments);
+        showNotification('🎲 Tirage généré avec succès !');
+    } catch (error) {
+        showNotification(error.message, 'error');
+    }
+}
+
+async function lockRoom() {
+    try {
+        const roomData = await FirestoreDB.getRoom(APP_STATE.currentRoom);
+        roomData.locked = true;
+        await FirestoreDB.saveRoom(APP_STATE.currentRoom, roomData);
+        
+        showNotification('🔒 Partie verrouillée');
+        document.getElementById('btnLock').disabled = true;
+    } catch (error) {
+        showNotification('Erreur lors du verrouillage', 'error');
+    }
+}
+
+function viewAllResults() {
+    if (Object.keys(APP_STATE.assignments).length === 0) {
+        showNotification('Aucun tirage n\'a été généré', 'error');
+        return;
+    }
+
+    const container = document.getElementById('allResultsContainer');
+    container.innerHTML = Object.entries(APP_STATE.assignments)
+        .map(([giver, receiver]) => `
+            <div class="result-item">
+                <span><strong>${giver}</strong> offre à</span>
+                <span>${receiver}</span>
+            </div>
+        `).join('');
+
+    document.getElementById('resultsModal').classList.remove('hidden');
+}
+
+function copyShareLink() {
+    const linkInput = document.getElementById('shareLink');
+    linkInput.select();
+    document.execCommand('copy');
+    showNotification('📋 Lien copié !');
+}
+
+// ============================================
+// PARTICIPANT - Fonctions
+// ============================================
+
+async function joinAsParticipant() {
+    const nameInput = document.getElementById('userName');
+    const name = nameInput.value.trim();
+    
+    if (!name) {
+        showNotification('Veuillez entrer votre prénom', 'error');
+        return;
+    }
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const roomCode = urlParams.get('room');
+    
+    if (!roomCode) {
+        showNotification('Code de partie manquant dans l\'URL', 'error');
+        return;
+    }
+
+    try {
+        const roomData = await FirestoreDB.getRoom(roomCode);
+        if (!roomData) {
+            showNotification('Cette partie n\'existe pas', 'error');
+            return;
+        }
+
+        // Vérifier si le prénom existe dans la liste
+        if (!roomData.participants.includes(name)) {
+            showNotification('Ce prénom n\'est pas dans la liste des participants', 'error');
+            return;
+        }
+
+        const userId = generateId();
+        FirestoreDB.saveUserSession(userId, name, roomCode);
+
+        APP_STATE.currentUser = userId;
+        APP_STATE.currentRoom = roomCode;
+        APP_STATE.isOrganizer = false;
+
+        hideElement('loginArea');
+        
+        // Écouter les changements de la room
+        FirestoreDB.listenToRoom(roomCode, (data) => {
+            const assignments = data.assignments || {};
+            checkAssignmentStatus(name, assignments);
+        });
+    } catch (error) {
+        console.error('Erreur connexion:', error);
+        showNotification('Erreur lors de la connexion', 'error');
+    }
+}
+
+function checkAssignmentStatus(userName, assignments) {
+    if (assignments[userName]) {
+        // Tirage déjà effectué
+        hideElement('waitingArea');
+        showElement('readyArea');
+        
+        document.getElementById('btnReveal').onclick = () => {
+            showResult(userName, assignments[userName]);
+        };
+    } else {
+        // En attente du tirage
+        hideElement('readyArea');
+        showElement('waitingArea');
+    }
+}
+
+function showResult(giver, receiver) {
+    hideElement('readyArea');
+    
+    const resultArea = document.getElementById('resultArea');
+    resultArea.innerHTML = `
+        <div class="result-card">
+            <h2>🎯 Tu offres un cadeau à :</h2>
+            <h1 class="recipient-name">${receiver}</h1>
+            <p class="hint">Garde le secret ! 🤫</p>
+        </div>
+    `;
+    showElement('resultArea');
+}
+
+// ============================================
+// INITIALISATION
+// ============================================
+
+async function init() {
+    // Vérifier si on arrive avec un code de room dans l'URL
+    const urlParams = new URLSearchParams(window.location.search);
+    const roomCode = urlParams.get('room');
+
+    if (roomCode) {
+        // Mode participant
+        try {
+            const roomData = await FirestoreDB.getRoom(roomCode);
+            if (roomData) {
+                showSection('participantSection');
+            } else {
+                showNotification('Cette partie n\'existe pas', 'error');
+                showSection('initialSection');
+            }
+        } catch (error) {
+            console.error('Erreur init:', error);
+            showNotification('Erreur lors du chargement', 'error');
+            showSection('initialSection');
+        }
+    } else {
+        // Vérifier s'il y a une session en cours
+        const session = FirestoreDB.getUserSession();
+        if (session) {
+            try {
+                const roomData = await FirestoreDB.getRoom(session.roomCode);
+                if (roomData && roomData.ownerId === session.userId) {
+                    // Restaurer la session organisateur
+                    APP_STATE.currentRoom = session.roomCode;
+                    APP_STATE.currentUser = session.userId;
+                    APP_STATE.isOrganizer = true;
+                    APP_STATE.participants = roomData.participants || [];
+                    APP_STATE.assignments = roomData.assignments || {};
+                    
+                    showSection('organizerSection');
+                    showRoomManagement(session.roomCode);
+                    
+                    // Écouter les changements
+                    FirestoreDB.listenToRoom(session.roomCode, (data) => {
+                        APP_STATE.participants = data.participants || [];
+                        APP_STATE.assignments = data.assignments || {};
+                        updateParticipantsList();
+                    });
+                } else {
+                    showSection('initialSection');
+                }
+            } catch (error) {
+                console.error('Erreur restauration session:', error);
+                showSection('initialSection');
+            }
+        } else {
+            showSection('initialSection');
+        }
+    }
+}
+
+// ============================================
+// EVENT LISTENERS
+// ============================================
+
+document.addEventListener('DOMContentLoaded', () => {
+    // Boutons écran initial
+    document.getElementById('btnOrganizer')?.addEventListener('click', () => {
+        showSection('organizerSection');
+    });
+
+    document.getElementById('btnParticipant')?.addEventListener('click', () => {
+        showSection('participantSection');
+    });
+
+    // Organisateur
+    document.getElementById('btnCreateRoom')?.addEventListener('click', createRoom);
+    document.getElementById('btnAddParticipant')?.addEventListener('click', addParticipant);
+    document.getElementById('btnGenerate')?.addEventListener('click', generateDraw);
+    document.getElementById('btnLock')?.addEventListener('click', lockRoom);
+    document.getElementById('btnViewResults')?.addEventListener('click', viewAllResults);
+    document.getElementById('btnCopyLink')?.addEventListener('click', copyShareLink);
+
+    // Enter key sur les inputs
+    document.getElementById('roomCode')?.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') createRoom();
+    });
+
+    document.getElementById('participantName')?.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') addParticipant();
+    });
+
+    document.getElementById('userName')?.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') joinAsParticipant();
+    });
+
+    // Participant
+    document.getElementById('btnJoin')?.addEventListener('click', joinAsParticipant);
+
+    // Modal
+    document.querySelector('.close')?.addEventListener('click', () => {
+        document.getElementById('resultsModal').classList.add('hidden');
+    });
+
+    window.addEventListener('click', (e) => {
+        const modal = document.getElementById('resultsModal');
+        if (e.target === modal) {
+            modal.classList.add('hidden');
+        }
+    });
+
+    // Initialiser l'app
+    init();
+});
+
+// ============================================
+// FONCTIONS GLOBALES (accessibles depuis HTML)
+// ============================================
+window.removeParticipant = removeParticipant;
