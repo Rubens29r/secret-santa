@@ -78,36 +78,57 @@ function generateSecretSanta(participants) {
 }
 
 // ============================================
-// GESTION DU STOCKAGE LOCAL (Simulation)
+// GESTION DU STOCKAGE FIRESTORE
 // ============================================
 
 class LocalStorage {
-    static saveRoom(roomCode, data) {
-        const rooms = this.getAllRooms();
-        rooms[roomCode] = {
-            ...data,
-            createdAt: new Date().toISOString()
-        };
-        localStorage.setItem('secretSantaRooms', JSON.stringify(rooms));
+    static async saveRoom(roomCode, data) {
+        try {
+            await db.collection('rooms').doc(roomCode).set({
+                ...data,
+                createdAt: firebase.firestore.FieldValue.serverTimestamp()
+            });
+        } catch (error) {
+            console.error('Erreur lors de la sauvegarde de la room:', error);
+            throw error;
+        }
     }
 
-    static getRoom(roomCode) {
-        const rooms = this.getAllRooms();
-        return rooms[roomCode] || null;
+    static async getRoom(roomCode) {
+        try {
+            const doc = await db.collection('rooms').doc(roomCode).get();
+            return doc.exists ? doc.data() : null;
+        } catch (error) {
+            console.error('Erreur lors de la récupération de la room:', error);
+            return null;
+        }
     }
 
-    static getAllRooms() {
-        const data = localStorage.getItem('secretSantaRooms');
-        return data ? JSON.parse(data) : {};
+    static async getAllRooms() {
+        try {
+            const snapshot = await db.collection('rooms').get();
+            const rooms = {};
+            snapshot.forEach(doc => {
+                rooms[doc.id] = doc.data();
+            });
+            return rooms;
+        } catch (error) {
+            console.error('Erreur lors de la récupération des rooms:', error);
+            return {};
+        }
     }
 
-    static deleteRoom(roomCode) {
-        const rooms = this.getAllRooms();
-        delete rooms[roomCode];
-        localStorage.setItem('secretSantaRooms', JSON.stringify(rooms));
+    static async deleteRoom(roomCode) {
+        try {
+            await db.collection('rooms').doc(roomCode).delete();
+        } catch (error) {
+            console.error('Erreur lors de la suppression de la room:', error);
+            throw error;
+        }
     }
 
     static saveUserSession(userId, userName, roomCode) {
+        // On garde la session en local pour la persistance
         localStorage.setItem('secretSantaSession', JSON.stringify({
             userId,
             userName,
@@ -158,7 +179,7 @@ function hideElement(elementId) {
 // ORGANISATEUR - Fonctions
 // ============================================
 
-function createRoom() {
+async function createRoom() {
     const roomCodeInput = document.getElementById('roomCode');
     const roomCode = roomCodeInput.value.trim().toUpperCase();
     
@@ -172,32 +193,37 @@ function createRoom() {
         return;
     }
 
-    // Vérifier si la room existe déjà
-    const existingRoom = LocalStorage.getRoom(roomCode);
-    if (existingRoom) {
-        showNotification('Ce code existe déjà. Choisissez-en un autre.', 'error');
-        return;
+    try {
+        // Vérifier si la room existe déjà
+        const existingRoom = await LocalStorage.getRoom(roomCode);
+        if (existingRoom) {
+            showNotification('Ce code existe déjà. Choisissez-en un autre.', 'error');
+            return;
+        }
+
+        // Créer la room
+        const userId = generateId();
+        const roomData = {
+            ownerId: userId,
+            participants: [],
+            assignments: {},
+            locked: false
+        };
+
+        await LocalStorage.saveRoom(roomCode, roomData);
+        LocalStorage.saveUserSession(userId, 'Organisateur', roomCode);
+
+        APP_STATE.currentRoom = roomCode;
+        APP_STATE.currentUser = userId;
+        APP_STATE.isOrganizer = true;
+        APP_STATE.participants = [];
+
+        showRoomManagement(roomCode);
+        showNotification(`Partie "${roomCode}" créée avec succès !`);
+    } catch (error) {
+        console.error('Erreur lors de la création de la room:', error);
+        showNotification('Une erreur est survenue lors de la création de la partie', 'error');
     }
-
-    // Créer la room
-    const userId = generateId();
-    const roomData = {
-        ownerId: userId,
-        participants: [],
-        assignments: {},
-        locked: false
-    };
-
-    LocalStorage.saveRoom(roomCode, roomData);
-    LocalStorage.saveUserSession(userId, 'Organisateur', roomCode);
-
-    APP_STATE.currentRoom = roomCode;
-    APP_STATE.currentUser = userId;
-    APP_STATE.isOrganizer = true;
-    APP_STATE.participants = [];
-
-    showRoomManagement(roomCode);
-    showNotification(`Partie "${roomCode}" créée avec succès !`);
 }
 
 function showRoomManagement(roomCode) {
@@ -211,7 +237,7 @@ function showRoomManagement(roomCode) {
     updateParticipantsList();
 }
 
-function addParticipant() {
+async function addParticipant() {
     const nameInput = document.getElementById('participantName');
     const name = nameInput.value.trim();
     
@@ -226,16 +252,23 @@ function addParticipant() {
         return;
     }
 
-    APP_STATE.participants.push(name);
-    
-    // Sauvegarder
-    const roomData = LocalStorage.getRoom(APP_STATE.currentRoom);
-    roomData.participants = APP_STATE.participants;
-    LocalStorage.saveRoom(APP_STATE.currentRoom, roomData);
+    try {
+        APP_STATE.participants.push(name);
+        
+        // Sauvegarder
+        const roomData = await LocalStorage.getRoom(APP_STATE.currentRoom);
+        roomData.participants = APP_STATE.participants;
+        await LocalStorage.saveRoom(APP_STATE.currentRoom, roomData);
 
-    nameInput.value = '';
-    updateParticipantsList();
-    showNotification(`${name} a été ajouté`);
+        nameInput.value = '';
+        updateParticipantsList();
+        showNotification(`${name} a été ajouté`);
+    } catch (error) {
+        console.error('Erreur lors de l\'ajout du participant:', error);
+        showNotification('Une erreur est survenue lors de l\'ajout du participant', 'error');
+        // Retirer le participant de l'état local en cas d'erreur
+        APP_STATE.participants = APP_STATE.participants.filter(p => p !== name);
+    }
 }
 
 function removeParticipant(name) {
@@ -266,7 +299,7 @@ function updateParticipantsList() {
     `).join('');
 }
 
-function generateDraw() {
+async function generateDraw() {
     if (APP_STATE.participants.length < 2) {
         showNotification('Il faut au moins 2 participants', 'error');
         return;
@@ -277,13 +310,18 @@ function generateDraw() {
         APP_STATE.assignments = assignments;
         
         // Sauvegarder
-        const roomData = LocalStorage.getRoom(APP_STATE.currentRoom);
+        const roomData = await LocalStorage.getRoom(APP_STATE.currentRoom);
+        if (!roomData) {
+            throw new Error('La partie n\'existe plus');
+        }
+        
         roomData.assignments = assignments;
-        LocalStorage.saveRoom(APP_STATE.currentRoom, roomData);
+        await LocalStorage.saveRoom(APP_STATE.currentRoom, roomData);
 
         showNotification('🎲 Tirage généré avec succès !');
     } catch (error) {
-        showNotification(error.message, 'error');
+        console.error('Erreur lors de la génération du tirage:', error);
+        showNotification(error.message || 'Une erreur est survenue lors du tirage', 'error');
     }
 }
 
@@ -379,19 +417,23 @@ function checkAssignmentStatus(userName, roomData) {
         // En attente du tirage
         showElement('waitingArea');
         
-        // Simuler une vérification périodique (en production, utiliser Firestore listeners)
-        const checkInterval = setInterval(() => {
-            const updatedRoom = LocalStorage.getRoom(APP_STATE.currentRoom);
-            if (updatedRoom && updatedRoom.assignments[userName]) {
-                clearInterval(checkInterval);
-                hideElement('waitingArea');
-                showElement('readyArea');
-                
-                document.getElementById('btnReveal').onclick = () => {
-                    showResult(userName, updatedRoom.assignments[userName]);
-                };
-            }
-        }, 2000);
+        // Écouter les changements en temps réel avec Firestore
+        const unsubscribe = db.collection('rooms').doc(APP_STATE.currentRoom)
+            .onSnapshot((doc) => {
+                const updatedRoom = doc.data();
+                if (updatedRoom && updatedRoom.assignments[userName]) {
+                    unsubscribe(); // Arrêter l'écoute une fois le tirage effectué
+                    hideElement('waitingArea');
+                    showElement('readyArea');
+                    
+                    document.getElementById('btnReveal').onclick = () => {
+                        showResult(userName, updatedRoom.assignments[userName]);
+                    };
+                }
+            }, (error) => {
+                console.error('Erreur lors de l\'écoute des changements:', error);
+                showNotification('Une erreur est survenue lors de la mise à jour', 'error');
+            });
     }
 }
 
@@ -413,41 +455,58 @@ function showResult(giver, receiver) {
 // INITIALISATION
 // ============================================
 
-function init() {
-    // Vérifier si on arrive avec un code de room dans l'URL
-    const urlParams = new URLSearchParams(window.location.search);
-    const roomCode = urlParams.get('room');
+async function init() {
+    try {
+        // Vérifier si on arrive avec un code de room dans l'URL
+        const urlParams = new URLSearchParams(window.location.search);
+        const roomCode = urlParams.get('room');
 
-    if (roomCode) {
-        // Mode participant
-        const roomData = LocalStorage.getRoom(roomCode);
-        if (roomData) {
-            showSection('participantSection');
-        } else {
-            showNotification('Cette partie n\'existe pas', 'error');
-            showSection('initialSection');
-        }
-    } else {
-        // Vérifier s'il y a une session en cours
-        const session = LocalStorage.getUserSession();
-        if (session) {
-            const roomData = LocalStorage.getRoom(session.roomCode);
-            if (roomData && roomData.ownerId === session.userId) {
-                // Restaurer la session organisateur
-                APP_STATE.currentRoom = session.roomCode;
-                APP_STATE.currentUser = session.userId;
-                APP_STATE.isOrganizer = true;
-                APP_STATE.participants = roomData.participants || [];
-                APP_STATE.assignments = roomData.assignments || {};
-                
-                showSection('organizerSection');
-                showRoomManagement(session.roomCode);
+        if (roomCode) {
+            // Mode participant
+            const roomData = await LocalStorage.getRoom(roomCode);
+            if (roomData) {
+                showSection('participantSection');
             } else {
+                showNotification('Cette partie n\'existe pas', 'error');
                 showSection('initialSection');
             }
         } else {
-            showSection('initialSection');
+            // Vérifier s'il y a une session en cours
+            const session = LocalStorage.getUserSession();
+            if (session) {
+                const roomData = await LocalStorage.getRoom(session.roomCode);
+                if (roomData && roomData.ownerId === session.userId) {
+                    // Restaurer la session organisateur
+                    APP_STATE.currentRoom = session.roomCode;
+                    APP_STATE.currentUser = session.userId;
+                    APP_STATE.isOrganizer = true;
+                    APP_STATE.participants = roomData.participants || [];
+                    APP_STATE.assignments = roomData.assignments || {};
+                    
+                    showSection('organizerSection');
+                    showRoomManagement(session.roomCode);
+
+                    // Mettre en place l'écouteur pour les mises à jour en temps réel
+                    db.collection('rooms').doc(session.roomCode)
+                        .onSnapshot((doc) => {
+                            const updatedData = doc.data();
+                            if (updatedData) {
+                                APP_STATE.participants = updatedData.participants || [];
+                                APP_STATE.assignments = updatedData.assignments || {};
+                                updateParticipantsList();
+                            }
+                        });
+                } else {
+                    showSection('initialSection');
+                }
+            } else {
+                showSection('initialSection');
+            }
         }
+    } catch (error) {
+        console.error('Erreur lors de l\'initialisation:', error);
+        showNotification('Une erreur est survenue lors du chargement', 'error');
+        showSection('initialSection');
     }
 }
 
