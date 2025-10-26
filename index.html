@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎁 Secret Santa</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- En-tête -->
+        <header class="header">
+            <h1>🎁 Secret Santa</h1>
+            <p class="subtitle">Organisez votre échange de cadeaux en toute simplicité</p>
+        </header>
+
+        <!-- Section Organisateur -->
+        <div id="organizerSection" class="section hidden">
+            <h2>👑 Espace Organisateur</h2>
+            
+            <div class="card">
+                <h3>Créer une nouvelle partie</h3>
+                <input type="text" id="roomCode" placeholder="Code de la partie (ex: NOEL2024)" class="input">
+                <button id="btnCreateRoom" class="btn-primary">Créer la partie</button>
+            </div>
+
+            <div class="card" id="roomManagement" style="display: none;">
+                <h3>Gestion de la partie : <span id="currentRoomCode"></span></h3>
+                
+                <div class="participants-section">
+                    <h4>Participants</h4>
+                    <div class="input-group">
+                        <input type="text" id="participantName" placeholder="Prénom du participant" class="input">
+                        <button id="btnAddParticipant" class="btn-secondary">Ajouter</button>
+                    </div>
+                    <ul id="participantsList" class="participants-list"></ul>
+                </div>
+
+                <div class="actions">
+                    <button id="btnGenerate" class="btn-primary">🎲 Générer le tirage</button>
+                    <button id="btnLock" class="btn-secondary">🔒 Verrouiller</button>
+                    <button id="btnViewResults" class="btn-secondary">👁️ Voir tous les résultats</button>
+                </div>
+
+                <div class="share-section">
+                    <h4>Partager avec les participants</h4>
+                    <div class="link-container">
+                        <input type="text" id="shareLink" readonly class="input">
+                        <button id="btnCopyLink" class="btn-secondary">📋 Copier</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Section Participant -->
+        <div id="participantSection" class="section">
+            <div class="card">
+                <h2>👤 Participant</h2>
+                
+                <div id="loginArea">
+                    <p>Entre ton prénom pour découvrir à qui tu dois offrir un cadeau :</p>
+                    <input type="text" id="userName" placeholder="Ton prénom" class="input">
+                    <button id="btnJoin" class="btn-primary">Continuer</button>
+                </div>
+
+                <div id="waitingArea" class="status-container hidden">
+                    <div class="status pending">
+                        <h3>⏳ Presque prêt !</h3>
+                        <p>L'organisateur prépare le tirage...</p>
+                        <small>Tu seras notifié dès que ce sera prêt !</small>
+                    </div>
+                </div>
+
+                <div id="readyArea" class="status-container hidden">
+                    <div class="status ready">
+                        <h3>🎉 C'est prêt !</h3>
+                        <button id="btnReveal" class="btn-primary pulse">
+                            🎁 Découvrir mon destinataire
+                        </button>
+                    </div>
+                </div>
+
+                <div id="resultArea" class="status-container hidden">
+                    <!-- Le résultat sera injecté ici -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Section de connexion initiale -->
+        <div id="initialSection" class="section">
+            <div class="card center">
+                <h2>Bienvenue !</h2>
+                <p>Tu es ici pour :</p>
+                <div class="button-group">
+                    <button id="btnOrganizer" class="btn-large btn-primary">
+                        👑 Organiser un Secret Santa
+                    </button>
+                    <button id="btnParticipant" class="btn-large btn-secondary">
+                        🎁 Participer à un Secret Santa
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Section résultats organisateur -->
+        <div id="resultsModal" class="modal hidden">
+            <div class="modal-content">
+                <span class="close">&times;</span>
+                <h2>📋 Tous les résultats</h2>
+                <div id="allResultsContainer"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+    
+    <!-- Application -->
+    <script src="app.js"></script>
+</body>
+</html>
